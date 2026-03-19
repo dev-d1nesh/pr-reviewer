@@ -37,7 +37,7 @@ GITHUB_TOKEN=your_github_personal_access_token
 TARGET_BRANCH=develop  # Fallback branch if detection fails
 
 # SSH Configuration (optional)
-SSH_HOST=git-tvs
+SSH_HOST=git-config-host
 ```
 
 ## 📖 Usage
