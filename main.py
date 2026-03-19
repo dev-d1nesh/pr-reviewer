@@ -109,7 +109,7 @@ def get_github_pr_diff(repo_path: Path, pr_number: int, base: str = "dev") -> st
             cwd=repo_path
         )
         subprocess.run(
-            ["git", "fetch", "origin", f"{base}:{base}"],
+            ["git", "fetch", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
             check=False, # Don't fail if local branch doesn't exist or is ahead
             capture_output=True,
             text=True,
@@ -410,7 +410,7 @@ def main():
         # Fetch everything needed
         print(f"Fetching PR #{args.pr} and {args.base} from origin...")
         subprocess.run(["git", "fetch", "origin", f"pull/{args.pr}/head:{revision}"], check=True, capture_output=True, cwd=repo_path)
-        subprocess.run(["git", "fetch", "origin", f"{args.base}:{args.base}"], check=False, capture_output=True, cwd=repo_path)
+        subprocess.run(["git", "fetch", "origin", f"+refs/heads/{args.base}:refs/remotes/origin/{args.base}"], check=False, capture_output=True, cwd=repo_path)
 
     elif args.branch:
         print(f"Fetching local diff for branch '{args.branch}' against {args.base}...")
