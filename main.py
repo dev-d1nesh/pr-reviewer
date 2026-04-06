@@ -362,7 +362,10 @@ def main():
         if not api_key:
             print("Error: GEMINI_API_KEY environment variable not set.")
             sys.exit(1)
-        model_name = args.model
+        if args.model == "gpt-4o":
+            model_name = "gemini-2.5-flash"
+        else:
+            model_name = args.model
 
     if args.post:
         if not args.pr:
