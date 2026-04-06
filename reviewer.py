@@ -1,7 +1,8 @@
-import os
 from google import genai
 from openai import OpenAI
-from typing import List, Dict
+
+
+AI_REQUEST_TIMEOUT_SECONDS = 60
 
 class PRReviewer:
     def __init__(self, api_key: str, model_name: str, provider: str = "openai"):
@@ -11,7 +12,7 @@ class PRReviewer:
         if self.provider == "gemini":
             self.client = genai.Client(api_key=api_key)
         elif self.provider == "openai":
-            self.client = OpenAI(api_key=api_key)
+            self.client = OpenAI(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS)
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -69,4 +70,3 @@ PR DIFF DATA (Annotated with line numbers):
 
 REVIEW:
 """
-

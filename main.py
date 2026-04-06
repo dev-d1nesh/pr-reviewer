@@ -1,14 +1,15 @@
 import argparse
-import os
-import sys
-import requests
-import subprocess
-import re
-from dotenv import load_dotenv
-from reviewer import PRReviewer
-
 import json
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
+
+from reviewer import PRReviewer
 
 load_dotenv()
 
@@ -16,6 +17,28 @@ REVIEWS_DIR = Path("reviews")
 REVIEWS_DIR.mkdir(exist_ok=True)
 REPOS_DIR = Path("repos")
 REPOS_DIR.mkdir(exist_ok=True)
+
+DEFAULT_PROVIDER = "openai"
+DEFAULT_OPENAI_MODEL = "gpt-4o"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+GITHUB_TIMEOUT_SECONDS = 30
+CHUNK_SEPARATOR = "\n\n" + ("=" * 80) + "\n\n"
+
+
+def get_default_base_branch() -> str:
+    return os.getenv("TARGET_BRANCH", "main")
+
+
+def resolve_model_name(provider: str, requested_model: str | None = None) -> str:
+    if requested_model:
+        return requested_model
+    if provider == "gemini":
+        return DEFAULT_GEMINI_MODEL
+    return DEFAULT_OPENAI_MODEL
+
+
+def cleanup_temp_branch(repo_path: Path, branch_name: str) -> None:
+    subprocess.run(["git", "branch", "-D", branch_name], capture_output=True, cwd=repo_path, check=False)
 
 def extract_pr_info(pr_input: str) -> tuple[int, str]:
     """
@@ -45,7 +68,7 @@ def get_pr_details(repo: str, pr_number: int) -> dict:
     }
     
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=GITHUB_TIMEOUT_SECONDS)
         if response.status_code == 200:
             return response.json()
         else:
@@ -80,8 +103,9 @@ def setup_repo(repo: str) -> Path:
         
     return repo_path
 
-def get_git_diff(repo_path: Path, revision: str, base: str = "dev") -> str:
+def get_git_diff(repo_path: Path, revision: str, base: str | None = None) -> str:
     """Gets the diff for a local revision (branch, commit, etc) against base."""
+    base = base or get_default_base_branch()
     try:
         result = subprocess.run(
             ["git", "diff", f"origin/{base}...{revision}"],
@@ -95,8 +119,9 @@ def get_git_diff(repo_path: Path, revision: str, base: str = "dev") -> str:
         print(f"Error getting git diff: {e.stderr if e.stderr else e}")
         return ""
 
-def get_github_pr_diff(repo_path: Path, pr_number: int, base: str = "dev") -> str:
+def get_github_pr_diff(repo_path: Path, pr_number: int, base: str | None = None) -> str:
     """Fetches the PR diff using local git by fetching the PR head."""
+    base = base or get_default_base_branch()
     temp_branch = f"pr-{pr_number}-review-temp"
     try:
         # 1. Fetch the PR head and base branch from origin
@@ -127,20 +152,21 @@ def get_github_pr_diff(repo_path: Path, pr_number: int, base: str = "dev") -> st
         )
         
         # 3. Clean up the temp branch
-        subprocess.run(["git", "branch", "-D", temp_branch], capture_output=True, cwd=repo_path)
+        cleanup_temp_branch(repo_path, temp_branch)
         
         return result.stdout
     except subprocess.CalledProcessError as e:
         print(f"Error fetching PR diff via git: {e.stderr if e.stderr else e}")
         # Cleanup if fetch failed but branch was somehow created
-        subprocess.run(["git", "branch", "-D", temp_branch], capture_output=True, cwd=repo_path)
+        cleanup_temp_branch(repo_path, temp_branch)
         return ""
     except Exception as e:
         print(f"Unexpected error: {e}")
         return ""
 
-def get_changed_files(repo_path: Path, revision: str, base: str = "dev") -> list[str]:
+def get_changed_files(repo_path: Path, revision: str, base: str | None = None) -> list[str]:
     """Gets the list of changed files between base and revision."""
+    base = base or get_default_base_branch()
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", f"origin/{base}...{revision}"],
@@ -202,8 +228,9 @@ def annotate_diff(diff_text: str) -> str:
             
     return "\n".join(annotated_lines)
 
-def get_file_diff(repo_path: Path, filename: str, revision: str, base: str = "dev") -> str:
+def get_file_diff(repo_path: Path, filename: str, revision: str, base: str | None = None) -> str:
     """Gets the diff for a single file."""
+    base = base or get_default_base_branch()
     try:
         result = subprocess.run(
             ["git", "diff", f"origin/{base}...{revision}", "--", filename],
@@ -216,8 +243,9 @@ def get_file_diff(repo_path: Path, filename: str, revision: str, base: str = "de
     except subprocess.CalledProcessError:
         return ""
 
-def create_diff_chunks(repo_path: Path, files: list[str], revision: str, base: str = "dev", max_chars: int = 15000) -> list[str]:
+def create_diff_chunks(repo_path: Path, files: list[str], revision: str, base: str | None = None, max_chars: int = 15000) -> list[str]:
     """Groups file diffs into chunks that fit within character limits."""
+    base = base or get_default_base_branch()
     chunks = []
     current_chunk = ""
     
@@ -225,14 +253,22 @@ def create_diff_chunks(repo_path: Path, files: list[str], revision: str, base: s
         file_diff = get_file_diff(repo_path, f, revision, base)
         if not file_diff:
             continue
+
+        section = (
+            f"### FILE: {f}\n"
+            f"### DIFF START\n"
+            f"{file_diff}\n"
+            f"### DIFF END"
+        )
             
         # If a single file diff is larger than max_chars, we still include it but it'll be its own chunk
         # (or truncated if we wanted to be even safer, but let's try this first)
-        if len(current_chunk) + len(file_diff) > max_chars and current_chunk:
+        candidate = section if not current_chunk else f"{current_chunk}{CHUNK_SEPARATOR}{section}"
+        if len(candidate) > max_chars and current_chunk:
             chunks.append(current_chunk)
-            current_chunk = file_diff
+            current_chunk = section
         else:
-            current_chunk += file_diff
+            current_chunk = candidate
             
     if current_chunk:
         chunks.append(current_chunk)
@@ -254,7 +290,7 @@ def post_github_comment(pr_number: int, comment: str, repo: str) -> bool:
     payload = {"body": comment}
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=GITHUB_TIMEOUT_SECONDS)
         if response.status_code == 201:
             print(f"Successfully posted comment to PR #{pr_number}")
             return True
@@ -272,60 +308,79 @@ class ReviewMerger:
         self.no_issues_found = False
 
     def add_chunk_review(self, review_text: str):
-        if "No critical issues found" in review_text:
-            self.no_issues_found = True
+        normalized_text = review_text.strip()
+        if not normalized_text:
             return
+
+        if "No critical issues found" in normalized_text:
+            self.no_issues_found = True
 
         # Extract table rows
         # Table rows look like: | 🔴 CRITICAL | `path/to/file` | L123 | Brief summary |
-        lines = review_text.splitlines()
+        lines = normalized_text.splitlines()
         in_table = False
         for line in lines:
-            if "| Level | File |" in line:
+            stripped = line.strip()
+            if "| Level | File |" in stripped:
                 in_table = True
                 continue
-            if in_table and line.startswith('|') and ':---' not in line:
-                if line.strip() and not line.startswith('| Level |'):
-                    self.summary_rows.append(line.strip())
-            elif in_table and not line.startswith('|'):
+            if in_table and stripped.startswith("|"):
+                if ":---" in stripped or stripped.startswith("| Level |"):
+                    continue
+                self.summary_rows.append(stripped)
+                continue
+            if in_table:
                 in_table = False
 
         # Extract detailed findings
-        if "### 🔍 Detailed Findings" in review_text:
-            findings_part = review_text.split("### 🔍 Detailed Findings")[-1].split("---")[0].strip()
-            if findings_part:
-                # Avoid adding "If the diff is clean..." fluff if it leaked in
-                findings_part = findings_part.split("If the diff is clean")[0].strip()
-                self.detailed_findings.append(findings_part)
+        if "### 🔍 Detailed Findings" not in normalized_text:
+            return
+
+        findings_part = normalized_text.split("### 🔍 Detailed Findings", 1)[1].strip()
+        if not findings_part:
+            return
+
+        section_pattern = re.compile(r"(?=^####\s)", re.MULTILINE)
+        for section in section_pattern.split(findings_part):
+            cleaned_section = section.strip()
+            if not cleaned_section or not cleaned_section.startswith("#### "):
+                continue
+            if "If the diff is clean" in cleaned_section:
+                cleaned_section = cleaned_section.split("If the diff is clean", 1)[0].strip()
+            if cleaned_section:
+                self.detailed_findings.append(cleaned_section)
 
     def get_merged_review(self) -> str:
+        unique_summary_rows = list(dict.fromkeys(self.summary_rows))
+        unique_detailed_findings = list(dict.fromkeys(self.detailed_findings))
+
         if not self.summary_rows and self.no_issues_found:
             return "✅ **No critical issues found. Great job!**"
         
-        if not self.summary_rows:
+        if not unique_summary_rows:
             return "✅ **No critical issues found in the analyzed chunks.**"
 
         report = "# 🛡️ PR Review Report\n\n"
         report += "| Level | File | Lines | Issue Summary |\n"
         report += "| :--- | :--- | :--- | :--- |\n"
-        for row in self.summary_rows:
+        for row in unique_summary_rows:
             report += f"{row}\n"
         
         report += "\n---\n\n### 🔍 Detailed Findings\n\n"
-        report += "\n\n---\n\n".join(self.detailed_findings)
+        report += "\n\n---\n\n".join(unique_detailed_findings)
         
         report += "\n\n---\n\nThese issues are critical and need to be addressed to ensure data integrity."
         
         return report
 
 def main():
-    parser = argparse.ArgumentParser(description="Gemini-powered PR Reviewer")
+    parser = argparse.ArgumentParser(description="AI-powered PR Reviewer")
     parser.add_argument("--pr", type=str, help="Complete GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)")
     parser.add_argument("--branch", type=str, help="Local branch name to compare against base")
-    parser.add_argument("--base", type=str, default="dev", help="Base branch to compare against (default: dev)")
+    parser.add_argument("--base", type=str, help=f"Base branch to compare against (default: TARGET_BRANCH or {get_default_base_branch()})")
     parser.add_argument("--repo", type=str, help="GitHub repository (owner/repo). This is automatically detected if --pr URL is provided.")
-    parser.add_argument("--provider", type=str, default="openai", choices=["gemini", "openai"], help="AI provider to use (default: openai)")
-    parser.add_argument("--model", type=str, default="gpt-4o", help="Model to use (default based on provider: gpt-4o or gemini-2.5-flash)")
+    parser.add_argument("--provider", type=str, default=DEFAULT_PROVIDER, choices=["gemini", "openai"], help=f"AI provider to use (default: {DEFAULT_PROVIDER})")
+    parser.add_argument("--model", type=str, help=f"Model to use (default: {DEFAULT_OPENAI_MODEL} for OpenAI, {DEFAULT_GEMINI_MODEL} for Gemini)")
     parser.add_argument("--post", action="store_true", help="Post the previously saved review as a comment on the GitHub PR")
     parser.add_argument("--file", type=str, help="Specify a custom file to post as a comment (overrides default naming)")
     
@@ -352,20 +407,12 @@ def main():
         if not api_key:
             print("Error: OPENAI_API_KEY environment variable not set.")
             sys.exit(1)
-        # Default model for OpenAI if not explicitly changed from the Gemini default
-        if args.model == "gemini-2.5-flash": # This might happen if user explicitly set gemini-2.5-flash but provider is openai
-             model_name = "gpt-4o"
-        else:
-             model_name = args.model
     else:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             print("Error: GEMINI_API_KEY environment variable not set.")
             sys.exit(1)
-        if args.model == "gpt-4o":
-            model_name = "gemini-2.5-flash"
-        else:
-            model_name = args.model
+    model_name = resolve_model_name(provider, args.model)
 
     if args.post:
         if not args.pr:
@@ -394,17 +441,15 @@ def main():
         pr_details = get_pr_details(args.repo, args.pr)
         if pr_details and "base" in pr_details:
             detected_base = pr_details["base"]["ref"]
-            if args.base == "dev": # Only override if it's the default or not manually set to something else
+            if not args.base:
                 print(f"Detected base branch: {detected_base}")
                 args.base = detected_base
             else:
                 print(f"PR targets {detected_base}, but using manually specified base: {args.base}")
         else:
-            # Fallback to TARGET_BRANCH from environment if detection failed
-            env_target_branch = os.getenv("TARGET_BRANCH")
-            if env_target_branch and args.base == "dev":
-                print(f"Falling back to TARGET_BRANCH: {env_target_branch}")
-                args.base = env_target_branch
+            if not args.base:
+                args.base = get_default_base_branch()
+                print(f"Using fallback base branch: {args.base}")
             
         print(f"Setting up repository context for {args.repo}...")
         repo_path = setup_repo(args.repo)
@@ -416,6 +461,7 @@ def main():
         subprocess.run(["git", "fetch", "origin", f"+refs/heads/{args.base}:refs/remotes/origin/{args.base}"], check=False, capture_output=True, cwd=repo_path)
 
     elif args.branch:
+        args.base = args.base or get_default_base_branch()
         print(f"Fetching local diff for branch '{args.branch}' against {args.base}...")
         repo_path = Path(".")
         revision = args.branch
@@ -470,7 +516,7 @@ def main():
     
     # Cleanup temp branch if it was a PR
     if args.pr:
-        subprocess.run(["git", "branch", "-D", revision], capture_output=True, cwd=repo_path)
+        cleanup_temp_branch(repo_path, revision)
 
 if __name__ == "__main__":
     main()

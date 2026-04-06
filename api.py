@@ -1,10 +1,9 @@
 import os
 import subprocess
-import re
-import json
 from pathlib import Path
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +11,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from reviewer import PRReviewer
-import main # Import existing functions from main.py
+import main
 
 load_dotenv()
 
@@ -40,14 +39,14 @@ async def read_index():
     if not index_path.exists():
         # Create a basic index.html if it doesn't exist yet
         return "<html><body><h1>PR Reviewer</h1><p>Static index.html not found. Please wait...</p></body></html>"
-    with open(index_path, "r") as f:
+    with open(index_path, "r", encoding="utf-8") as f:
         return f.read()
 
 class ReviewRequest(BaseModel):
     pr_url: str
-    provider: str = "openai"
+    provider: str = main.DEFAULT_PROVIDER
     model: Optional[str] = None
-    base: str = "dev"
+    base: Optional[str] = None
 
 class ReviewResponse(BaseModel):
     status: str
@@ -74,7 +73,7 @@ async def get_review(review_id: str):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Review not found")
     
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
     
     return {"id": review_id, "content": content}
@@ -90,20 +89,19 @@ async def create_review(req: ReviewRequest):
     provider = req.provider.lower()
     if provider == "openai":
         api_key = os.getenv("OPENAI_API_KEY")
-        model_name = req.model or "gpt-4o"
     elif provider == "gemini":
         api_key = os.getenv("GEMINI_API_KEY")
-        model_name = req.model or "gemini-2.5-flash"
     else:
         raise HTTPException(status_code=400, detail="Unsupported provider")
+    model_name = main.resolve_model_name(provider, req.model)
 
     if not api_key:
         raise HTTPException(status_code=500, detail=f"{provider.upper()}_API_KEY not set")
 
     # Automate base branch detection
-    base = req.base
+    base = req.base or main.get_default_base_branch()
     pr_details = main.get_pr_details(repo, pr_number)
-    if pr_details and "base" in pr_details:
+    if pr_details and "base" in pr_details and not req.base:
         base = pr_details["base"]["ref"]
 
     repo_path = main.setup_repo(repo)
@@ -114,7 +112,8 @@ async def create_review(req: ReviewRequest):
         subprocess.run(["git", "fetch", "origin", f"pull/{pr_number}/head:{revision}"], check=True, capture_output=True, cwd=repo_path)
         subprocess.run(["git", "fetch", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"], check=False, capture_output=True, cwd=repo_path)
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Git fetch failed: {e.stderr.decode() if e.stderr else str(e)}")
+        error_output = e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr
+        raise HTTPException(status_code=500, detail=f"Git fetch failed: {error_output or str(e)}")
 
     all_files = main.get_changed_files(repo_path, revision, base)
     filtered_files = main.filter_files(all_files)
@@ -140,11 +139,11 @@ async def create_review(req: ReviewRequest):
     # Save the review
     review_id = f"PR_{pr_number}_review"
     save_path = REVIEWS_DIR / f"{review_id}.md"
-    with open(save_path, "w") as f:
+    with open(save_path, "w", encoding="utf-8") as f:
         f.write(merged_review)
     
     # Cleanup
-    subprocess.run(["git", "branch", "-D", revision], capture_output=True, cwd=repo_path)
+    main.cleanup_temp_branch(repo_path, revision)
 
     return ReviewResponse(
         status="success", 

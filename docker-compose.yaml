@@ -1,32 +1,17 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    # Uncomment the lines below if you have an NVIDIA GPU
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-
-  # This helper service pulls the model automatically on first run
-  ollama-pull-model:
-    image: curlimages/curl:latest
-    container_name: ollama-pull-model
-    depends_on:
-      - ollama
-    entrypoint: [ "/bin/sh", "-c" ]
+  api:
+    image: python:3.11-slim
+    container_name: pr-reviewer-api
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
     command: >
-      "sleep 5;
-      curl -X POST http://ollama:11434/api/pull -d '{\"name\": \"phi3.5\"}';
-      echo 'Model pull initiated. Check ollama logs for progress.'"
-
-volumes:
-  ollama_data:
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn api:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    restart: unless-stopped
