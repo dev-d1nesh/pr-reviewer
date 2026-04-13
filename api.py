@@ -26,12 +26,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-REVIEWS_DIR = Path("reviews")
+BASE_DIR = Path(__file__).resolve().parent
+REVIEWS_DIR = BASE_DIR / "reviews"
 REVIEWS_DIR.mkdir(exist_ok=True)
-STATIC_DIR = Path("static")
+STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index():

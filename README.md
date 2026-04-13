@@ -17,6 +17,7 @@ A lightweight Pull Request reviewer powered by OpenAI and Google Gemini. It anal
 ### 1. Prerequisites
 - Python 3.10+
 - `pip`
+- Git
 
 ### 2. Installation
 Clone the repository and install dependencies:
@@ -24,6 +25,11 @@ Clone the repository and install dependencies:
 git clone <your-repo-url>
 cd pr-reviewer
 pip install -r requirements.txt
+```
+
+On Windows, the equivalent commands are usually:
+```powershell
+py -m pip install -r requirements.txt
 ```
 
 ### 3. Configuration
@@ -73,6 +79,11 @@ Run the API locally:
 uvicorn api:app --reload
 ```
 
+On Windows:
+```powershell
+py -m uvicorn api:app --reload
+```
+
 Then open `http://localhost:8000`.
 
 Run the same service with Docker Compose:
@@ -81,6 +92,12 @@ docker compose up
 ```
 
 This starts the FastAPI app on port `8000` and serves both the JSON API and the bundled static frontend.
+
+## 🪟 Windows Notes
+
+- The app now stores `reviews/`, `repos/`, and `static/` relative to the project directory instead of the shell's current working directory.
+- Review filenames and cloned repo directory names are sanitized to avoid Windows-invalid characters such as `:`, `?`, `*`, and `\`.
+- Git still needs to be installed and available on `PATH`.
 
 ## 📁 Project Structure
 

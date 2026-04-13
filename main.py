@@ -11,11 +11,13 @@ from dotenv import load_dotenv
 
 from reviewer import PRReviewer
 
+BASE_DIR = Path(__file__).resolve().parent
+
 load_dotenv()
 
-REVIEWS_DIR = Path("reviews")
+REVIEWS_DIR = BASE_DIR / "reviews"
 REVIEWS_DIR.mkdir(exist_ok=True)
-REPOS_DIR = Path("repos")
+REPOS_DIR = BASE_DIR / "repos"
 REPOS_DIR.mkdir(exist_ok=True)
 
 DEFAULT_PROVIDER = "openai"
@@ -39,6 +41,11 @@ def resolve_model_name(provider: str, requested_model: str | None = None) -> str
 
 def cleanup_temp_branch(repo_path: Path, branch_name: str) -> None:
     subprocess.run(["git", "branch", "-D", branch_name], capture_output=True, cwd=repo_path, check=False)
+
+
+def sanitize_filesystem_name(value: str) -> str:
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
+    return sanitized or "review"
 
 def extract_pr_info(pr_input: str) -> tuple[int, str]:
     """
@@ -80,7 +87,7 @@ def get_pr_details(repo: str, pr_number: int) -> dict:
 
 def setup_repo(repo: str) -> Path:
     """Ensures a dedicated directory for the repo exists and is cloned."""
-    repo_path = REPOS_DIR / repo.replace("/", "_")
+    repo_path = REPOS_DIR / sanitize_filesystem_name(repo)
     
     # Determine remote URL
     ssh_host = os.getenv("SSH_HOST")
@@ -426,7 +433,7 @@ def main():
             sys.exit(1)
             
         print(f"Reading review from {review_file}...")
-        with open(review_file, "r") as f:
+        with open(review_file, "r", encoding="utf-8") as f:
             review_content = f.read()
             
         print("\nPosting review as a comment to GitHub PR...")
@@ -463,7 +470,7 @@ def main():
     elif args.branch:
         args.base = args.base or get_default_base_branch()
         print(f"Fetching local diff for branch '{args.branch}' against {args.base}...")
-        repo_path = Path(".")
+        repo_path = Path.cwd()
         revision = args.branch
     else:
         print("Error: Either --pr or --branch must be provided (unless using --post).")
@@ -509,9 +516,10 @@ def main():
     print(merged_review)
 
     # Save the review
-    save_path = REVIEWS_DIR / (f"PR_{args.pr}_review.md" if args.pr else f"branch_{args.branch.replace('/', '_')}_review.md")
+    branch_slug = sanitize_filesystem_name(args.branch) if args.branch else None
+    save_path = REVIEWS_DIR / (f"PR_{args.pr}_review.md" if args.pr else f"branch_{branch_slug}_review.md")
     print(f"\nSaving review to {save_path}...")
-    with open(save_path, "w") as f:
+    with open(save_path, "w", encoding="utf-8") as f:
         f.write(merged_review)
     
     # Cleanup temp branch if it was a PR
