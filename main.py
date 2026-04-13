@@ -489,7 +489,7 @@ def main():
     
     # Create chunks based on character limit (proxy for tokens)
     # Tier 1 TPM is 30k. 15k chars is ~4k tokens, safe enough.
-    max_chars = 15000 if provider == "openai" else 100000 
+    max_chars = 15000
     chunks = create_diff_chunks(repo_path, filtered_files, revision, args.base, max_chars=max_chars)
     
     if not chunks:

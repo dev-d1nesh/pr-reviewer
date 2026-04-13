@@ -122,7 +122,7 @@ async def create_review(req: ReviewRequest):
     if not filtered_files:
         return ReviewResponse(status="success", message="No relevant changes found after filtering.")
 
-    max_chars = 15000 if provider == "openai" else 100000 
+    max_chars = 15000
     chunks = main.create_diff_chunks(repo_path, filtered_files, revision, base, max_chars=max_chars)
     
     if not chunks:
